@@ -476,9 +476,9 @@ async function load(){
     const [raw,log]=await Promise.all([fetchSheet(GID_RAW),fetchSheet(GID_LOG).catch(()=>[])]);
     const rows=raw.slice(1).filter(r=>r[3]);
     if(!rows.length) throw new Error('Sheet Raw_Data trống (có thể đang sync)');
-    const batch=Math.max(...rows.map(r=>+r[1]||0));
-    const cur=rows.filter(r=>(+r[1]||0)===batch).sort((a,b)=>(+a[2])-(+b[2]));
-    const errCells=cur.filter(r=>/^#[A-Z\/0!?]+[!?A]?$/.test(r[3].trim())).map(r=>r[2]);
+    // Script downloads 99 interviews per batch; each batch is its own XML document, so read every batch in order.
+    const cur=rows.slice().sort((a,b)=>((+a[1]||0)-(+b[1]||0))||((+a[2]||0)-(+b[2]||0)));
+    const errCells=cur.filter(r=>/^#[A-Z\/0!?]+[!?A]?$/.test(r[3].trim())).map(r=>r[1]+'/'+r[2]);
     const xml=cur.map(r=>r[3]).join('');
     DATA=buildData(xml); DATA.errCells=errCells;
     const last=log.filter(r=>r[0]).pop();
@@ -488,7 +488,7 @@ async function load(){
     document.getElementById('mN').textContent=DATA.recs.length;
     initFilters(); render();
     const warn=DATA.bad.length||DATA.errCells.length;
-    setStatus('<i></i>Live · tải lúc '+fmtTime(new Date())+' · tự cập nhật mỗi 5 phút'+(warn?` · <b>⚠ ${DATA.errCells.length} ô lỗi trong Sheet (chunk ${DATA.errCells.join(', ')}), bỏ qua phiếu ${DATA.bad.join(', ')}</b>`:''),warn?'warn':'ok');
+    setStatus('<i></i>Live · tải lúc '+fmtTime(new Date())+' · tự cập nhật mỗi 5 phút'+(warn?` · <b>⚠ ${DATA.errCells.length} ô lỗi trong Sheet (batch/chunk ${DATA.errCells.join(', ')}), bỏ qua phiếu ${DATA.bad.join(', ')}</b>`:''),warn?'warn':'ok');
   }catch(e){
     console.error(e);
     setStatus('<i></i>'+(DATA.recs.length?'Giữ dữ liệu cũ – ':'')+'Không tải được dữ liệu: '+esc(e.message)+' · thử lại sau 5 phút','err');

@@ -15,3 +15,6 @@ Trong `index.html`:
 - `SHEET_ID`, `GID_RAW`, `GID_LOG` – nguồn dữ liệu
 - `REFRESH_MS` – chu kỳ cập nhật (mặc định 5 phút)
 - `Q`, `B4_LBL`, `C5_LBL`, `D4_SCALE`, `CARD`, `E4_LBL`, `RF_VI` – tên câu và nhãn hiển thị
+
+## Script sync (Apps Script)
+`apps-script/syncSTGSurvey.gs` – tải XML từ SurveyToGo API, chia chunk 45.000 ký tự và ghi vào `Raw_Data` (mỗi chunk có dấu `'` ở đầu để Sheets không hiểu nhầm thành công thức). API key/password lưu trong Script Properties (`STG_API_KEY`, `STG_PASSWORD`), không nằm trong repo.
