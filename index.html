@@ -44,7 +44,8 @@ html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 "Segoe U
 .btn:hover{border-color:#cfd3da;color:var(--ink)}
 .sync{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-3);padding:7px 0}
 .sync i{width:7px;height:7px;border-radius:50%;background:#c9c8c3;display:inline-block}
-.sync.ok i{background:#0ea371}.sync.busy i{background:#d9a400}.sync.err{color:#b42318}.sync.err i{background:#d03b3b}
+.sync.ok i{background:#0ea371}.sync.busy i{background:#d9a400}.sync.warn i{background:#d9a400}.sync.warn b{color:#b45309;font-weight:600}
+.sync.err{color:#b42318}.sync.err i{background:#d03b3b}
 .basechip{margin-left:auto;font-size:12px;color:var(--ink-2);padding:7px 0}
 .basechip b{color:var(--ink)}
 
@@ -424,11 +425,26 @@ const kt=(el,tag)=>{const k=el&&kid(el,tag);return k?k.textContent:'';};
 const codesOf=el=>{const a=el&&kid(el,'Answers');return a?kids(a,'Answer').map(x=>({c:+kt(x,'Code'),t:kt(x,'Text')})):[];};
 const otherRF=t=>{const m=/khác\s*(\d)/i.exec(t||'');return m?94+(+m[1]):null;};
 
+// Parse each <Subject> on its own so one damaged block in the Sheet does not stop the whole dashboard.
+function subjectBlocks(xmlText){
+  const re=/<Subject[\s>]/g, starts=[]; let m;
+  while((m=re.exec(xmlText))) starts.push(m.index);
+  const ok=[], bad=[];
+  starts.forEach((a,i)=>{
+    let seg=xmlText.slice(a, i+1<starts.length?starts[i+1]:xmlText.length);
+    const e=seg.lastIndexOf('</Subject>'); seg=e>=0?seg.slice(0,e+10):seg;
+    const d=new DOMParser().parseFromString(seg,'text/xml');
+    if(d.getElementsByTagName('parsererror').length||!d.documentElement||d.documentElement.tagName!=='Subject'){
+      const ids=[...seg.matchAll(/<SubjectNum[^>]*>(\d+)</g)].map(x=>x[1]); bad.push(ids.join('+')||'?');
+    } else ok.push(d.documentElement);
+  });
+  return {ok,bad};
+}
 function buildData(xmlText){
-  const doc=new DOMParser().parseFromString(xmlText,'text/xml');
-  if(doc.getElementsByTagName('parsererror').length) throw new Error('XML chưa đầy đủ (có thể đang sync)');
-  const out={rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}}};
-  for(const s of doc.getElementsByTagName('Subject')){
+  const {ok,bad}=subjectBlocks(xmlText);
+  if(!ok.length) throw new Error('XML chưa đầy đủ (có thể đang sync)');
+  const out={rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad};
+  for(const s of ok){
     if(kt(s,'Completed')!=='True') continue;
     const r={id:+kt(s,'SubjectNum'),date:kt(s,'Date').slice(0,10),B1:[],B4:{},C5:{},D4:[],E4:{}};
     for(const q of s.getElementsByTagName('Question')){
@@ -461,15 +477,18 @@ async function load(){
     const rows=raw.slice(1).filter(r=>r[3]);
     if(!rows.length) throw new Error('Sheet Raw_Data trống (có thể đang sync)');
     const batch=Math.max(...rows.map(r=>+r[1]||0));
-    const xml=rows.filter(r=>(+r[1]||0)===batch).sort((a,b)=>(+a[2])-(+b[2])).map(r=>r[3]).join('');
-    DATA=buildData(xml);
+    const cur=rows.filter(r=>(+r[1]||0)===batch).sort((a,b)=>(+a[2])-(+b[2]));
+    const errCells=cur.filter(r=>/^#[A-Z\/0!?]+[!?A]?$/.test(r[3].trim())).map(r=>r[2]);
+    const xml=cur.map(r=>r[3]).join('');
+    DATA=buildData(xml); DATA.errCells=errCells;
     const last=log.filter(r=>r[0]).pop();
     document.getElementById('mSync').textContent=last?last[0]:'–';
     const ds=[...new Set(DATA.recs.map(r=>r.date))].sort(); const fd=d=>d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4);
     document.getElementById('mDates').textContent=ds.length?fd(ds[0])+' – '+fd(ds[ds.length-1]):'–';
     document.getElementById('mN').textContent=DATA.recs.length;
     initFilters(); render();
-    setStatus('<i></i>Live · tải lúc '+fmtTime(new Date())+' · tự cập nhật mỗi 5 phút','ok');
+    const warn=DATA.bad.length||DATA.errCells.length;
+    setStatus('<i></i>Live · tải lúc '+fmtTime(new Date())+' · tự cập nhật mỗi 5 phút'+(warn?` · <b>⚠ ${DATA.errCells.length} ô lỗi trong Sheet (chunk ${DATA.errCells.join(', ')}), bỏ qua phiếu ${DATA.bad.join(', ')}</b>`:''),warn?'warn':'ok');
   }catch(e){
     console.error(e);
     setStatus('<i></i>'+(DATA.recs.length?'Giữ dữ liệu cũ – ':'')+'Không tải được dữ liệu: '+esc(e.message)+' · thử lại sau 5 phút','err');
