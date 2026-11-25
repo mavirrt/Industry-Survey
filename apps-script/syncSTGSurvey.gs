@@ -217,10 +217,24 @@ function stgCodes_(el) {
     return { c: Number(x.getChildText('Code')), t: x.getChildText('Text') || '' };
   }) : [];
 }
+function stgAttr_(el, name) {
+  var a = el.getAttribute(name);
+  return a == null ? null : (typeof a === 'string' ? a : a.getValue());
+}
+// value of the Subject child that carries Field="<field>" (e.g. SbjNam, Test)
+function stgField_(s, field) {
+  var hit = s.getChildren().filter(function (c) { return stgAttr_(c, 'Field') === field; })[0];
+  return hit ? hit.getText() : null;
+}
 function stgTopicKey_(t) { return Number(String(t.getChildText('TopicVariable') || '').split('_').pop()); }
 function stgExtractSubject_(s) {
-  var r = { id: Number(s.getChildText('SubjectNum')), date: String(s.getChildText('Date') || '').slice(0, 10),
+  var d = new Date(String(s.getChildText('Date') || ''));
+  var r = { id: Number(s.getChildText('SubjectNum')),
+    // interview date in Vietnam time (UTC+7)
+    date: isNaN(d) ? '' : new Date(d.getTime() + 7 * 3600e3).toISOString().slice(0, 10),
     done: s.getChildText('Completed') === 'True', st: s.getChildText('Status') || '',
+    // test interviews: interviewer STGTester or Test flag (same rule as the QC dashboard)
+    test: stgField_(s, 'SbjNam') === 'STGTester' || stgField_(s, 'Test') === 'True',
     A: {}, B1: [], B4: {}, C5: {}, D4: [], E4: {} };
   stgDescendants_(s, 'Question', []).forEach(function (q) {
     var v = q.getChildText('Variable');

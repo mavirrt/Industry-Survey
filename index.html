@@ -315,7 +315,7 @@ function render(){
   const avgB1=N?recs.reduce((s,r)=>s+r.B1.length,0)/N:0;
   const d4=recs.flatMap(r=>r.D4); const d4m=d4.length?d4.filter(x=>x[2]>=4).length/d4.length*100:0;
   document.getElementById('kpis').innerHTML=`
-    <div class="kpi"><div class="k">Đáp viên</div><div class="v">${N}</div><div class="s">trên tổng ${DATA.recs.length} phỏng vấn hoàn tất</div></div>
+    <div class="kpi"><div class="k">Đáp viên</div><div class="v">${N}</div><div class="s">trên tổng ${DATA.recs.length} phỏng vấn hoàn tất (không tính test)</div></div>
     <div class="kpi"><div class="k">Nhóm vị trí / đáp viên (B1)</div><div class="v">${avgB1.toFixed(1)}</div><div class="s">${Object.keys(roleCnt).filter(k=>k!=='0').length} / 25 nhóm RF được nhắc đến</div></div>
     <div class="kpi"><div class="k">Nhóm vị trí phổ biến nhất</div><div class="v sm">${top?esc(rfName(+top[0])):'–'}</div><div class="s">${top?`${top[1]} đáp viên · ${fp(pct(top[1],N))}`:''}</div></div>
     <div class="kpi"><div class="k">Sẵn sàng tuyển (D4 Top-2)</div><div class="v">${d4.length?Math.round(d4m)+'%':'–'}</div><div class="s">${d4.length} lượt đánh giá chương trình × vị trí</div></div>`;
@@ -426,7 +426,7 @@ const codesOf=el=>{const a=el&&kid(el,'Answers');return a?kids(a,'Answer').map(x
 const otherRF=t=>{const m=/khác\s*(\d)/i.exec(t||'');return m?94+(+m[1]):null;};
 
 // DOM adapter so the shared extractor (same code as the Apps Script) runs in the browser
-function domEl(el){return {getName:()=>el.tagName,getChildren:n=>[...el.children].filter(c=>!n||c.tagName===n).map(domEl),
+function domEl(el){return {getName:()=>el.tagName,getText:()=>el.textContent,getAttribute:n=>el.getAttribute(n),getChildren:n=>[...el.children].filter(c=>!n||c.tagName===n).map(domEl),
   getChild:n=>{const c=[...el.children].find(c=>c.tagName===n);return c?domEl(c):null;},
   getChildText:n=>{const c=[...el.children].find(c=>c.tagName===n);return c?c.textContent:null;}};}
 /* ==== STG subject extractor – shared by the Apps Script sync and the dashboard ====
@@ -453,10 +453,24 @@ function stgCodes_(el) {
     return { c: Number(x.getChildText('Code')), t: x.getChildText('Text') || '' };
   }) : [];
 }
+function stgAttr_(el, name) {
+  var a = el.getAttribute(name);
+  return a == null ? null : (typeof a === 'string' ? a : a.getValue());
+}
+// value of the Subject child that carries Field="<field>" (e.g. SbjNam, Test)
+function stgField_(s, field) {
+  var hit = s.getChildren().filter(function (c) { return stgAttr_(c, 'Field') === field; })[0];
+  return hit ? hit.getText() : null;
+}
 function stgTopicKey_(t) { return Number(String(t.getChildText('TopicVariable') || '').split('_').pop()); }
 function stgExtractSubject_(s) {
-  var r = { id: Number(s.getChildText('SubjectNum')), date: String(s.getChildText('Date') || '').slice(0, 10),
+  var d = new Date(String(s.getChildText('Date') || ''));
+  var r = { id: Number(s.getChildText('SubjectNum')),
+    // interview date in Vietnam time (UTC+7)
+    date: isNaN(d) ? '' : new Date(d.getTime() + 7 * 3600e3).toISOString().slice(0, 10),
     done: s.getChildText('Completed') === 'True', st: s.getChildText('Status') || '',
+    // test interviews: interviewer STGTester or Test flag (same rule as the QC dashboard)
+    test: stgField_(s, 'SbjNam') === 'STGTester' || stgField_(s, 'Test') === 'True',
     A: {}, B1: [], B4: {}, C5: {}, D4: [], E4: {} };
   stgDescendants_(s, 'Question', []).forEach(function (q) {
     var v = q.getChildText('Variable');
@@ -488,7 +502,7 @@ function stgExtractSubject_(s) {
 function ingest(list,extra){
   const out=Object.assign({rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad:[],errCells:[]},extra||{});
   for(const r of list){
-    if(!r.done) continue;
+    if(!r.done||r.test) continue;
     const rec={id:r.id,date:r.date,B1:r.B1.map(x=>x[0]),B4:r.B4,C5:r.C5,D4:r.D4,E4:r.E4};
     for(const v of ['A1','A4','A7','A10','A11']){ if(!r.A[v]) continue; const [c,t]=r.A[v]; const l=shortTxt(v,c,t); rec[v]=l; out.ord[v][l]=c; if(v==='A7') out.full.A7[l]=t; }
     r.B1.forEach(([c,t])=>{ if(c<95) out.rf[c]=String(t).replace(/^RF\d+_/,''); });
@@ -516,6 +530,7 @@ async function loadDash(){
   if(!rows.length) return null;            // sheet not created yet -> fall back to Raw_Data
   const list=[],bad=[];
   rows.forEach(r=>{try{list.push(JSON.parse(r[4]));}catch(e){bad.push(r[0]);}});
+  if(list.some(r=>!('test' in r))) return null;  // Dash_Data written by an older script (no test flag) -> use Raw_Data
   return ingest(list,{bad,src:'Dash_Data'});
 }
 async function loadRaw(){
