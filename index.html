@@ -425,46 +425,107 @@ const kt=(el,tag)=>{const k=el&&kid(el,tag);return k?k.textContent:'';};
 const codesOf=el=>{const a=el&&kid(el,'Answers');return a?kids(a,'Answer').map(x=>({c:+kt(x,'Code'),t:kt(x,'Text')})):[];};
 const otherRF=t=>{const m=/khác\s*(\d)/i.exec(t||'');return m?94+(+m[1]):null;};
 
-// Parse each <Subject> on its own so one damaged block in the Sheet does not stop the whole dashboard.
-function subjectBlocks(xmlText){
-  const re=/<Subject[\s>]/g, starts=[]; let m;
-  while((m=re.exec(xmlText))) starts.push(m.index);
-  const ok=[], bad=[];
-  starts.forEach((a,i)=>{
-    let seg=xmlText.slice(a, i+1<starts.length?starts[i+1]:xmlText.length);
-    const e=seg.lastIndexOf('</Subject>'); seg=e>=0?seg.slice(0,e+10):seg;
-    const d=new DOMParser().parseFromString(seg,'text/xml');
-    if(d.getElementsByTagName('parsererror').length||!d.documentElement||d.documentElement.tagName!=='Subject'){
-      const ids=[...seg.matchAll(/<SubjectNum[^>]*>(\d+)</g)].map(x=>x[1]); bad.push(ids.join('+')||'?');
-    } else ok.push(d.documentElement);
+// DOM adapter so the shared extractor (same code as the Apps Script) runs in the browser
+function domEl(el){return {getName:()=>el.tagName,getChildren:n=>[...el.children].filter(c=>!n||c.tagName===n).map(domEl),
+  getChild:n=>{const c=[...el.children].find(c=>c.tagName===n);return c?domEl(c):null;},
+  getChildText:n=>{const c=[...el.children].find(c=>c.tagName===n);return c?c.textContent:null;}};}
+/* ==== STG subject extractor – shared by the Apps Script sync and the dashboard ====
+   Works on any element exposing getName(), getChildren([name]), getChild(name), getChildText(name)
+   (XmlService in Apps Script; a small DOM adapter in the browser). Keep both copies identical. */
+function stgSplitSubjects_(xml) {
+  var re = /<Subject[\s>]/g, starts = [], m;
+  while ((m = re.exec(xml))) starts.push(m.index);
+  return starts.map(function (a, i) {
+    var seg = xml.slice(a, i + 1 < starts.length ? starts[i + 1] : xml.length);
+    var e = seg.lastIndexOf('</Subject>');
+    return e >= 0 ? seg.slice(0, e + 10) : seg;
   });
-  return {ok,bad};
 }
-function buildData(xmlText){
-  const {ok,bad}=subjectBlocks(xmlText);
-  if(!ok.length) throw new Error('XML chưa đầy đủ (có thể đang sync)');
-  const out={rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad};
-  for(const s of ok){
-    if(kt(s,'Completed')!=='True') continue;
-    const r={id:+kt(s,'SubjectNum'),date:kt(s,'Date').slice(0,10),B1:[],B4:{},C5:{},D4:[],E4:{}};
-    for(const q of s.getElementsByTagName('Question')){
-      const v=kt(q,'Variable');
-      if(['A1','A4','A7','A10','A11'].includes(v)){const a=codesOf(q)[0]; if(a){const l=shortTxt(v,a.c,a.t); r[v]=l; out.ord[v][l]=a.c; if(v==='A7') out.full.A7[l]=a.t;}}
-      else if(v==='B1'){codesOf(q).forEach(a=>{r.B1.push(a.c); if(a.c<95) out.rf[a.c]=a.t.replace(/^RF\d+_/,'');});}
-      else if(v==='B4'||v==='C5'||v==='E4'){
-        const tp=kid(q,'Topics'); if(!tp) continue;
-        for(const t of kids(tp,'Topic')){const rf=+kt(t,'TopicVariable').split('_').pop(); const cs=codesOf(t).map(a=>a.c); if(!cs.length) continue;
-          if(v==='E4') r.E4[rf]=cs; else r[v][rf]=cs[0];}
-      }
-      else if(v==='D4'){
-        const fv=kt(q,'FullVariable'); const m=/^RF(\d+)_/.exec(fv); const rf=m?+m[1]:otherRF(fv); if(!rf) continue;
-        const tp=kid(q,'Topics'); if(!tp) continue;
-        for(const t of kids(tp,'Topic')){const card=+kt(t,'TopicVariable').split('_').pop(); const c=codesOf(t)[0]; if(c) r.D4.push([rf,card,c.c]);}
-      }
+function stgDescendants_(el, name, out) {
+  el.getChildren().forEach(function (c) {
+    if (c.getName() === name) out.push(c); else stgDescendants_(c, name, out);
+  });
+  return out;
+}
+function stgCodes_(el) {
+  var a = el.getChild('Answers');
+  return a ? a.getChildren('Answer').map(function (x) {
+    return { c: Number(x.getChildText('Code')), t: x.getChildText('Text') || '' };
+  }) : [];
+}
+function stgTopicKey_(t) { return Number(String(t.getChildText('TopicVariable') || '').split('_').pop()); }
+function stgExtractSubject_(s) {
+  var r = { id: Number(s.getChildText('SubjectNum')), date: String(s.getChildText('Date') || '').slice(0, 10),
+    done: s.getChildText('Completed') === 'True', st: s.getChildText('Status') || '',
+    A: {}, B1: [], B4: {}, C5: {}, D4: [], E4: {} };
+  stgDescendants_(s, 'Question', []).forEach(function (q) {
+    var v = q.getChildText('Variable');
+    if (['A1', 'A4', 'A7', 'A10', 'A11'].indexOf(v) >= 0) {
+      var a = stgCodes_(q)[0]; if (a) r.A[v] = [a.c, a.t];
+    } else if (v === 'B1') {
+      r.B1 = stgCodes_(q).map(function (a) { return [a.c, a.t]; });
+    } else if (v === 'B4' || v === 'C5' || v === 'E4') {
+      var tp = q.getChild('Topics'); if (!tp) return;
+      tp.getChildren('Topic').forEach(function (t) {
+        var cs = stgCodes_(t).map(function (a) { return a.c; }); if (!cs.length) return;
+        if (v === 'E4') r.E4[stgTopicKey_(t)] = cs; else r[v][stgTopicKey_(t)] = cs[0];
+      });
+    } else if (v === 'D4') {
+      var fv = q.getChildText('FullVariable') || '';
+      var m = /^RF(\d+)_/.exec(fv), o = /khác\s*(\d)/i.exec(fv);
+      var rf = m ? Number(m[1]) : (o ? 94 + Number(o[1]) : 0); if (!rf) return;
+      var tp2 = q.getChild('Topics'); if (!tp2) return;
+      tp2.getChildren('Topic').forEach(function (t) {
+        var c = stgCodes_(t)[0]; if (c) r.D4.push([rf, stgTopicKey_(t), c.c]);
+      });
     }
-    if(r.A1) out.recs.push(r);
+  });
+  return r;
+}
+/* ==== end shared extractor ==== */
+
+// compact records (from Dash_Data or from XML) -> dashboard data
+function ingest(list,extra){
+  const out=Object.assign({rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad:[],errCells:[]},extra||{});
+  for(const r of list){
+    if(!r.done) continue;
+    const rec={id:r.id,date:r.date,B1:r.B1.map(x=>x[0]),B4:r.B4,C5:r.C5,D4:r.D4,E4:r.E4};
+    for(const v of ['A1','A4','A7','A10','A11']){ if(!r.A[v]) continue; const [c,t]=r.A[v]; const l=shortTxt(v,c,t); rec[v]=l; out.ord[v][l]=c; if(v==='A7') out.full.A7[l]=t; }
+    r.B1.forEach(([c,t])=>{ if(c<95) out.rf[c]=String(t).replace(/^RF\d+_/,''); });
+    if(rec.A1) out.recs.push(rec);
   }
   return out;
+}
+function buildData(xmlText){
+  const list=[],bad=[];
+  for(const seg of stgSplitSubjects_(xmlText)){
+    const d=new DOMParser().parseFromString(seg,'text/xml');
+    if(d.getElementsByTagName('parsererror').length||!d.documentElement||d.documentElement.tagName!=='Subject'){
+      bad.push([...seg.matchAll(/<SubjectNum[^>]*>(\d+)</g)].map(x=>x[1]).join('+')||'?'); continue; }
+    list.push(stgExtractSubject_(domEl(d.documentElement)));
+  }
+  if(!list.length) throw new Error('XML chưa đầy đủ (có thể đang sync)');
+  return ingest(list,{bad});
+}
+async function fetchByName(name){
+  const r=await fetch(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=0&sheet=${encodeURIComponent(name)}&_=${Date.now()}`,{cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status); return parseCSV(await r.text());
+}
+async function loadDash(){
+  const rows=(await fetchByName('Dash_Data')).filter(r=>r[4]&&r[4].trim()[0]==='{');
+  if(!rows.length) return null;            // sheet not created yet -> fall back to Raw_Data
+  const list=[],bad=[];
+  rows.forEach(r=>{try{list.push(JSON.parse(r[4]));}catch(e){bad.push(r[0]);}});
+  return ingest(list,{bad,src:'Dash_Data'});
+}
+async function loadRaw(){
+  const raw=await fetchSheet(GID_RAW);
+  const rows=raw.slice(1).filter(r=>r[3]);
+  if(!rows.length) throw new Error('Sheet Raw_Data trống (có thể đang sync)');
+  // Script downloads 99 interviews per batch; each batch is its own XML document, so read every batch in order.
+  const cur=rows.slice().sort((a,b)=>((+a[1]||0)-(+b[1]||0))||((+a[2]||0)-(+b[2]||0)));
+  const errCells=cur.filter(r=>/^#[A-Z\/0!?]+[!?A]?$/.test(r[3].trim())).map(r=>r[1]+'/'+r[2]);
+  const d=buildData(cur.map(r=>r[3]).join('')); d.errCells=errCells; d.src='Raw_Data'; return d;
 }
 
 const fmtTime=d=>d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -473,14 +534,8 @@ let loading=false, filtersReady=false;
 async function load(){
   if(loading) return; loading=true; setStatus('<i></i>Đang tải dữ liệu…','busy');
   try{
-    const [raw,log]=await Promise.all([fetchSheet(GID_RAW),fetchSheet(GID_LOG).catch(()=>[])]);
-    const rows=raw.slice(1).filter(r=>r[3]);
-    if(!rows.length) throw new Error('Sheet Raw_Data trống (có thể đang sync)');
-    // Script downloads 99 interviews per batch; each batch is its own XML document, so read every batch in order.
-    const cur=rows.slice().sort((a,b)=>((+a[1]||0)-(+b[1]||0))||((+a[2]||0)-(+b[2]||0)));
-    const errCells=cur.filter(r=>/^#[A-Z\/0!?]+[!?A]?$/.test(r[3].trim())).map(r=>r[1]+'/'+r[2]);
-    const xml=cur.map(r=>r[3]).join('');
-    DATA=buildData(xml); DATA.errCells=errCells;
+    const log=await fetchSheet(GID_LOG).catch(()=>[]);
+    DATA=(await loadDash().catch(e=>{console.warn('Dash_Data:',e);return null;}))||await loadRaw();
     const last=log.filter(r=>r[0]).pop();
     document.getElementById('mSync').textContent=last?last[0]:'–';
     const ds=[...new Set(DATA.recs.map(r=>r.date))].sort(); const fd=d=>d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4);
@@ -488,7 +543,9 @@ async function load(){
     document.getElementById('mN').textContent=DATA.recs.length;
     initFilters(); render();
     const warn=DATA.bad.length||DATA.errCells.length;
-    setStatus('<i></i>Live · tải lúc '+fmtTime(new Date())+' · tự cập nhật mỗi 5 phút'+(warn?` · <b>⚠ ${DATA.errCells.length} ô lỗi trong Sheet (batch/chunk ${DATA.errCells.join(', ')}), bỏ qua phiếu ${DATA.bad.join(', ')}</b>`:''),warn?'warn':'ok');
+    const msg=[DATA.errCells.length?`${DATA.errCells.length} ô lỗi trong Sheet (batch/chunk ${DATA.errCells.join(', ')})`:'',DATA.bad.length?`bỏ qua phiếu ${DATA.bad.join(', ')}`:''].filter(Boolean).join(', ');
+    setStatus('<i></i>Live · tải lúc '+fmtTime(new Date())+' · tự cập nhật mỗi 5 phút'+(warn?` · <b>⚠ ${msg}</b>`:''),warn?'warn':'ok');
+    document.getElementById('sync').title='Nguồn dữ liệu: sheet '+DATA.src;
   }catch(e){
     console.error(e);
     setStatus('<i></i>'+(DATA.recs.length?'Giữ dữ liệu cũ – ':'')+'Không tải được dữ liệu: '+esc(e.message)+' · thử lại sau 5 phút','err');
