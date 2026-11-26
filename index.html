@@ -180,7 +180,7 @@ table.tv td.num,table.tv th.num{text-align:right}
     <article class="card full" id="qE4"></article>
   </section>
 
-  <p class="foot">Base: đáp viên hoàn tất phỏng vấn trong file export. B4, C5, D4, E4 tính trên đáp viên trả lời cho từng nhóm vị trí (đã chọn ở B1). Nhóm vị trí có base &lt; 5 hiển thị chữ xám, chỉ dùng tham khảo. Mã "Khác 1–3" (RF95–97) được gộp thành "Khác", base tính theo lượt. Dữ liệu đọc trực tiếp từ Google Sheet (SurveyToGo sync), gồm cả phiếu đang chờ duyệt – chưa qua QC/clean cuối.</p>
+  <p class="foot">Base: phỏng vấn hoàn tất, không tính bài test (STGTester) và bài QC đã huỷ (Rejected). B4, C5, D4, E4 tính trên đáp viên trả lời cho từng nhóm vị trí (đã chọn ở B1). Nhóm vị trí có base &lt; 5 hiển thị chữ xám, chỉ dùng tham khảo. Mã "Khác 1–3" (RF95–97) được gộp thành "Khác", base tính theo lượt. Dữ liệu đọc trực tiếp từ Google Sheet (SurveyToGo sync), gồm cả phiếu đang chờ duyệt – chưa qua QC/clean cuối.</p>
 </main>
 <div id="tip"></div>
 
@@ -315,7 +315,7 @@ function render(){
   const avgB1=N?recs.reduce((s,r)=>s+r.B1.length,0)/N:0;
   const d4=recs.flatMap(r=>r.D4); const d4m=d4.length?d4.filter(x=>x[2]>=4).length/d4.length*100:0;
   document.getElementById('kpis').innerHTML=`
-    <div class="kpi"><div class="k">Đáp viên</div><div class="v">${N}</div><div class="s">trên tổng ${DATA.recs.length} phỏng vấn hoàn tất (không tính test)</div></div>
+    <div class="kpi"><div class="k">Đáp viên</div><div class="v">${N}</div><div class="s">phỏng vấn hoàn tất · không tính test${DATA.rejected?` và ${DATA.rejected} bài bị huỷ`:' và bài bị huỷ'}</div></div>
     <div class="kpi"><div class="k">Nhóm vị trí / đáp viên (B1)</div><div class="v">${avgB1.toFixed(1)}</div><div class="s">${Object.keys(roleCnt).filter(k=>k!=='0').length} / 25 nhóm RF được nhắc đến</div></div>
     <div class="kpi"><div class="k">Nhóm vị trí phổ biến nhất</div><div class="v sm">${top?esc(rfName(+top[0])):'–'}</div><div class="s">${top?`${top[1]} đáp viên · ${fp(pct(top[1],N))}`:''}</div></div>
     <div class="kpi"><div class="k">Sẵn sàng tuyển (D4 Top-2)</div><div class="v">${d4.length?Math.round(d4m)+'%':'–'}</div><div class="s">${d4.length} lượt đánh giá chương trình × vị trí</div></div>`;
@@ -500,9 +500,10 @@ function stgExtractSubject_(s) {
 
 // compact records (from Dash_Data or from XML) -> dashboard data
 function ingest(list,extra){
-  const out=Object.assign({rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad:[],errCells:[]},extra||{});
+  const out=Object.assign({rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad:[],errCells:[],rejected:0},extra||{});
   for(const r of list){
     if(!r.done||r.test) continue;
+    if(/reject/i.test(r.st||'')){ out.rejected++; continue; }   // bài QC đã huỷ (Rejected) không tính
     const rec={id:r.id,date:r.date,B1:r.B1.map(x=>x[0]),B4:r.B4,C5:r.C5,D4:r.D4,E4:r.E4};
     for(const v of ['A1','A4','A7','A10','A11']){ if(!r.A[v]) continue; const [c,t]=r.A[v]; const l=shortTxt(v,c,t); rec[v]=l; out.ord[v][l]=c; if(v==='A7') out.full.A7[l]=t; }
     r.B1.forEach(([c,t])=>{ if(c<95) out.rf[c]=String(t).replace(/^RF\d+_/,''); });
