@@ -4,11 +4,18 @@ const STG_CONFIG = {
   dataSheet: 'Raw_Data',
   logSheet: 'Sync_Log',
   dashSheet: 'Dash_Data',   // compact sheet the dashboard reads (1 row per interview)
-  writeRawXml: true,        // set false to stop writing the full XML to Raw_Data (faster sync)
   chunkSize: 45000
 };
 
-function syncSTGSurvey() {
+// Dashboard sync: fast (~1-2 min). Writes only Dash_Data. Run every 5 minutes.
+function syncSTGSurvey() { stgRunSync_(true, false); }
+
+// Raw XML sync: slow (many large cells). Writes only Raw_Data for the QC page.
+// Run it manually or on a trigger of every 1 hour or longer.
+function syncSTGRaw() { stgRunSync_(false, true); }
+
+function stgRunSync_(doDash, doRaw) {
+  const t0 = Date.now();
   const props = PropertiesService.getScriptProperties();
   const apiKey = props.getProperty('STG_API_KEY');
   const password = props.getProperty('STG_PASSWORD');
@@ -86,7 +93,7 @@ function syncSTGSurvey() {
     const xml = response.getContentText().replace(/^\uFEFF/, '');
 
     // 2b. Compact rows for the dashboard: parse each <Subject> on its own
-    stgSplitSubjects_(xml).forEach(function (seg) {
+    if (doDash) stgSplitSubjects_(xml).forEach(function (seg) {
       try {
         const r = stgExtractSubject_(XmlService.parse(seg).getRootElement());
         dashRows.push([r.id, r.date, r.done ? 'True' : 'False', r.st, JSON.stringify(r)]);
@@ -100,7 +107,7 @@ function syncSTGSurvey() {
     const batchNumber = Math.floor(i / 99) + 1;
     const chunkSize = STG_CONFIG.chunkSize;
 
-    for (let j = 0; STG_CONFIG.writeRawXml && j < xml.length; j += chunkSize) {
+    for (let j = 0; doRaw && j < xml.length; j += chunkSize) {
       rows.push([
         syncTime,
         batchNumber,
@@ -117,19 +124,21 @@ function syncSTGSurvey() {
   }
 
   // 4a. Write compact dashboard sheet
-  let dashSheet = ss.getSheetByName(STG_CONFIG.dashSheet);
-  if (!dashSheet) {
-    dashSheet = ss.insertSheet(STG_CONFIG.dashSheet);
+  if (doDash) {
+    let dashSheet = ss.getSheetByName(STG_CONFIG.dashSheet);
+    if (!dashSheet) {
+      dashSheet = ss.insertSheet(STG_CONFIG.dashSheet);
+    }
+    dashSheet.clearContents();
+    dashSheet.getRange(1, 1, dashRows.length + 1, 5).setValues(
+      [['SubjectNum', 'Date', 'Completed', 'Status', 'JSON']].concat(dashRows));
+    dashSheet.setFrozenRows(1);
   }
-  dashSheet.clearContents();
-  dashSheet.getRange(1, 1, dashRows.length + 1, 5).setValues(
-    [['SubjectNum', 'Date', 'Completed', 'Status', 'JSON']].concat(dashRows));
-  dashSheet.setFrozenRows(1);
 
   // 4b. Write raw XML chunks (optional backup)
   //    FIX: clear only now, right before writing, so the sheet is empty for
   //    as short a time as possible.
-  if (STG_CONFIG.writeRawXml) {
+  if (doRaw) {
   dataSheet.clearContents();
   dataSheet.getRange(1, 1, 1, 4).setValues([[
     'Sync Time',
@@ -149,7 +158,7 @@ function syncSTGSurvey() {
   }
 
   // FIX: check that no chunk was turned into an error value.
-  const written = (STG_CONFIG.writeRawXml && rows.length > 0)
+  const written = (doRaw && rows.length > 0)
     ? dataSheet.getRange(2, 4, rows.length, 1).getValues()
     : [];
   const badChunks = [];
@@ -178,10 +187,11 @@ function syncSTGSurvey() {
     STG_CONFIG.surveyId,
     interviewIds.length,
     rows.length,
-    (badChunks.length || badSubjects.length)
+    (doDash ? '[dash] ' : '[raw] ') + Math.round((Date.now() - t0) / 1000) + 's ' +
+    ((badChunks.length || badSubjects.length)
       ? 'WARNING:' + (badChunks.length ? ' bad chunks ' + badChunks.join(', ') : '') +
         (badSubjects.length ? ' bad subjects ' + badSubjects.join(', ') : '')
-      : 'SUCCESS'
+      : 'SUCCESS')
   ]);
 
   SpreadsheetApp.flush();
