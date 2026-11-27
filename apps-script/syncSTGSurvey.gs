@@ -8,7 +8,7 @@ const STG_CONFIG = {
   chunkSize: 45000
 };
 
-// Dashboard sync: fast (~1-2 min). Writes only Dash_Data. Run every 5 minutes.
+// Fast sync: writes Dash_Data (dashboard) and QC_Data (QC page). Run every 5 minutes.
 function syncSTGSurvey() { stgRunSync_(true, false); }
 
 // Raw XML sync: slow (many large cells). Writes only Raw_Data for the QC page.
@@ -61,6 +61,7 @@ function stgRunSync_(doDash, doRaw) {
   }
 
   const syncTime = new Date();
+  let tFetch = 0, tParse = 0;
   const rows = [];
   const dashRows = [];
   const qcRows = [];
@@ -78,6 +79,7 @@ function stgRunSync_(doDash, doRaw) {
       '&surveyID=' + encodeURIComponent(STG_CONFIG.surveyId) +
       '&onlyHeaders=false&includeNulls=false';
 
+    const tf = Date.now();
     const response = UrlFetchApp.fetch(dataUrl, {
       method: 'get',
       headers: {
@@ -93,11 +95,13 @@ function stgRunSync_(doDash, doRaw) {
     }
 
     const xml = response.getContentText().replace(/^\uFEFF/, '');
+    tFetch += Date.now() - tf;
+    const tp = Date.now();
 
     // 2b. Compact rows for the dashboard: parse each <Subject> on its own
     if (doDash) stgSplitSubjects_(xml).forEach(function (seg) {
       try {
-        const root = XmlService.parse(seg).getRootElement();
+        const root = stgParseXml_(seg);
         const r = stgExtractSubject_(root);
         dashRows.push([r.id, r.date, r.done ? 'True' : 'False', r.st, JSON.stringify(r)]);
         const qj = stgQcJson_(stgQcSubject_(root));
@@ -108,6 +112,8 @@ function stgRunSync_(doDash, doRaw) {
         badSubjects.push(id ? id[1] : '?');
       }
     });
+
+    tParse += Date.now() - tp;
 
     // 3. Split XML into chunks below 50,000 characters
     const batchNumber = Math.floor(i / 99) + 1;
@@ -202,7 +208,8 @@ function stgRunSync_(doDash, doRaw) {
     STG_CONFIG.surveyId,
     interviewIds.length,
     rows.length,
-    (doDash ? '[dash] ' : '[raw] ') + Math.round((Date.now() - t0) / 1000) + 's ' +
+    (doDash ? '[dash] ' : '[raw] ') + Math.round((Date.now() - t0) / 1000) + 's (tải ' +
+    Math.round(tFetch / 1000) + 's, xử lý ' + Math.round(tParse / 1000) + 's) ' +
     ((badChunks.length || badSubjects.length)
       ? 'WARNING:' + (badChunks.length ? ' bad chunks ' + badChunks.join(', ') : '') +
         (badSubjects.length ? ' bad subjects ' + badSubjects.join(', ') : '')
@@ -215,7 +222,51 @@ function stgRunSync_(doDash, doRaw) {
   Logger.log('XML chunks saved: ' + rows.length);
   if (badChunks.length) Logger.log('Bad chunks: ' + badChunks.join(', '));
   Logger.log('Dashboard rows: ' + dashRows.length);
+  Logger.log('Download ' + Math.round(tFetch / 1000) + 's, parse ' + Math.round(tParse / 1000) +
+    's, total ' + Math.round((Date.now() - t0) / 1000) + 's');
   Logger.log('Sync completed.');
+}
+
+/* ---- Fast XML reader (replaces XmlService.parse, which is too slow for this survey) ----
+   Returns an element with the same methods the extractors use:
+   getName, getChildren([name]), getChild(name), getChildText(name), getAttribute(name), getText, getValue. */
+function stgDecode_(s) {
+  return s.indexOf('&') < 0 ? s : s.replace(/&(#x[0-9a-fA-F]+|#\d+|lt|gt|amp|quot|apos);/g, function (m, e) {
+    if (e === 'lt') return '<'; if (e === 'gt') return '>'; if (e === 'amp') return '&';
+    if (e === 'quot') return '"'; if (e === 'apos') return "'";
+    return String.fromCodePoint(e[1] === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10));
+  });
+}
+function StgEl_(name, attrs) { this.n = name; this.a = attrs; this.c = []; this.t = ''; }
+StgEl_.prototype.getName = function () { return this.n; };
+StgEl_.prototype.getChildren = function (name) { return name ? this.c.filter(function (x) { return x.n === name; }) : this.c.slice(); };
+StgEl_.prototype.getChild = function (name) { for (var i = 0; i < this.c.length; i++) if (this.c[i].n === name) return this.c[i]; return null; };
+StgEl_.prototype.getChildText = function (name) { var c = this.getChild(name); return c ? c.t : null; };
+StgEl_.prototype.getAttribute = function (name) { return Object.prototype.hasOwnProperty.call(this.a, name) ? this.a[name] : null; };
+StgEl_.prototype.getText = function () { return this.t; };
+StgEl_.prototype.getValue = function () { return this.t + this.c.map(function (x) { return x.getValue(); }).join(''); };
+function stgParseXml_(xml) {
+  xml = xml.replace(/\r\n?/g, '\n');        // XML line-ending normalisation (same as XmlService)
+  var re = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[([\s\S]*?)\]\]>|<!DOCTYPE[^>]*>|<(\/?)([A-Za-z_][\w.:-]*)([^>]*?)(\/?)>/g;
+  var attrRe = /([\w.:-]+)\s*=\s*("([^"]*)"|'([^']*)')/g;
+  var top = new StgEl_('#doc', {}), stack = [top], last = 0, m;
+  while ((m = re.exec(xml))) {
+    var cur = stack[stack.length - 1];
+    if (m.index > last) cur.t += stgDecode_(xml.slice(last, m.index));
+    last = re.lastIndex;
+    if (m[1] != null) { cur.t += m[1]; continue; }
+    if (!m[3]) continue;                       // comment, declaration, doctype
+    if (m[2] === '/') {
+      if (stack.length < 2 || cur.n !== m[3]) throw new Error('Bad XML: </' + m[3] + '>');
+      stack.pop(); continue;
+    }
+    var attrs = {}, am; attrRe.lastIndex = 0;
+    while ((am = attrRe.exec(m[4]))) attrs[am[1]] = stgDecode_(am[3] != null ? am[3] : am[4]);
+    var el = new StgEl_(m[3], attrs); cur.c.push(el);
+    if (!m[5]) stack.push(el);
+  }
+  if (stack.length !== 1 || top.c.length !== 1) throw new Error('Bad XML: unclosed element');
+  return top.c[0];
 }
 
 /* ==== STG subject extractor – shared by the Apps Script sync and the dashboard ====
