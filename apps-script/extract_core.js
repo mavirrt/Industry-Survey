@@ -67,4 +67,39 @@ function stgExtractSubject_(s) {
   });
   return r;
 }
+/* ---- QC page: compact per-subject record {m, a, times} (same shape qc.js builds from raw XML) ---- */
+var STG_QC_META = ['SbjNum', 'SbjNam', 'Test', 'Complete', 'Status', 'CustomData1', 'VStart', 'NumberOfSessions'];
+function stgQcAnswers_(el) {
+  var an = el.getChild('Answers'); if (!an) return [];
+  return an.getChildren('Answer').map(function (x) {
+    return {code: x.getChildText('Code'), text: x.getChildText('Text'), oth: x.getChildText('OtherSpec')};
+  });
+}
+function stgQcSubject_(s) {
+  var m = {}, a = {}, times = [];
+  s.getChildren().forEach(function (c) {
+    if (c.getName() === 'Chapter') return;
+    var k = stgAttr_(c, 'Field') || c.getName();
+    if (STG_QC_META.indexOf(k) >= 0) m[k] = c.getValue();
+  });
+  stgDescendants_(s, 'Question', []).forEach(function (q) {
+    var v = q.getChildText('Variable'), qt = q.getChildText('QType'), t = q.getChildText('AnsweredTimeStamp');
+    if (t) times.push(new Date(t).getTime());
+    if (qt === 'eqtAmerican') {
+      var an = stgQcAnswers_(q)[0];
+      a[v] = {code: an ? an.code : null, text: q.getChildText('QuestionAnswer'), oth: an ? an.oth : null};
+    } else if (qt === 'eqtMultiSelect') {
+      a[v] = stgQcAnswers_(q);
+    } else {
+      var d = {}, tps = q.getChild('Topics');
+      (tps ? tps.getChildren('Topic') : []).forEach(function (tp) {
+        d[tp.getChildText('Text')] = (qt === 'eqtMultiNumeric' || qt === 'eqtMultiText') ? tp.getChildText('TopicAnswer') : stgQcAnswers_(tp);
+      });
+      a[v] = d;
+    }
+  });
+  times.sort(function (x, y) { return x - y; });
+  return {m: m, a: a, times: times.length > 1 ? [times[0], times[times.length - 1]] : []};
+}
+function stgQcJson_(rec) { return JSON.stringify(rec, function (k, v) { return v === null ? undefined : v; }); }
 /* ==== end shared extractor ==== */

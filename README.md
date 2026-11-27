@@ -23,3 +23,9 @@ Trong `index.html`:
 Phần đọc XML (`stgSplitSubjects_`, `stgExtractSubject_`…) nằm ở `apps-script/extract_core.js` và được chép y hệt vào cuối `syncSTGSurvey.gs` và trong `index.html`. Sửa ở một chỗ thì chép lại sang hai chỗ kia.
 
 `apps-script/syncSTGSurvey.gs` – tải XML từ SurveyToGo API, chia chunk 45.000 ký tự và ghi vào `Raw_Data` (mỗi chunk có dấu `'` ở đầu để Sheets không hiểu nhầm thành công thức). API key/password lưu trong Script Properties (`STG_API_KEY`, `STG_PASSWORD`), không nằm trong repo.
+
+
+## Sheets written by the script
+- `Dash_Data` – one JSON row per interview, read by this dashboard.
+- `QC_Data` – one compact JSON row per interview (`{m,a,times}`), read by the QC page. Written by `syncSTGSurvey` (5-minute trigger).
+- `Raw_Data` – full XML chunks. Only written by `syncSTGRaw` (manual/slow); the QC page uses it only as a fallback.

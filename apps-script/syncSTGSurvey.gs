@@ -4,6 +4,7 @@ const STG_CONFIG = {
   dataSheet: 'Raw_Data',
   logSheet: 'Sync_Log',
   dashSheet: 'Dash_Data',   // compact sheet the dashboard reads (1 row per interview)
+  qcSheet: 'QC_Data',       // compact sheet the QC page reads (1 row per interview)
   chunkSize: 45000
 };
 
@@ -62,6 +63,7 @@ function stgRunSync_(doDash, doRaw) {
   const syncTime = new Date();
   const rows = [];
   const dashRows = [];
+  const qcRows = [];
   const badSubjects = [];
 
   // 2. Download in batches of 99
@@ -95,8 +97,12 @@ function stgRunSync_(doDash, doRaw) {
     // 2b. Compact rows for the dashboard: parse each <Subject> on its own
     if (doDash) stgSplitSubjects_(xml).forEach(function (seg) {
       try {
-        const r = stgExtractSubject_(XmlService.parse(seg).getRootElement());
+        const root = XmlService.parse(seg).getRootElement();
+        const r = stgExtractSubject_(root);
         dashRows.push([r.id, r.date, r.done ? 'True' : 'False', r.st, JSON.stringify(r)]);
+        const qj = stgQcJson_(stgQcSubject_(root));
+        if (qj.length > 49000) throw new Error('QC record too long: ' + qj.length);
+        qcRows.push([r.id, qj]);
       } catch (e) {
         const id = /<SubjectNum[^>]*>(\d+)</.exec(seg);
         badSubjects.push(id ? id[1] : '?');
@@ -133,6 +139,15 @@ function stgRunSync_(doDash, doRaw) {
     dashSheet.getRange(1, 1, dashRows.length + 1, 5).setValues(
       [['SubjectNum', 'Date', 'Completed', 'Status', 'JSON']].concat(dashRows));
     dashSheet.setFrozenRows(1);
+
+    let qcSheet = ss.getSheetByName(STG_CONFIG.qcSheet);
+    if (!qcSheet) {
+      qcSheet = ss.insertSheet(STG_CONFIG.qcSheet);
+    }
+    qcSheet.clearContents();
+    qcSheet.getRange(1, 1, qcRows.length + 1, 2).setValues(
+      [['SubjectNum', 'JSON']].concat(qcRows));
+    qcSheet.setFrozenRows(1);
   }
 
   // 4b. Write raw XML chunks (optional backup)
@@ -272,4 +287,39 @@ function stgExtractSubject_(s) {
   });
   return r;
 }
+/* ---- QC page: compact per-subject record {m, a, times} (same shape qc.js builds from raw XML) ---- */
+var STG_QC_META = ['SbjNum', 'SbjNam', 'Test', 'Complete', 'Status', 'CustomData1', 'VStart', 'NumberOfSessions'];
+function stgQcAnswers_(el) {
+  var an = el.getChild('Answers'); if (!an) return [];
+  return an.getChildren('Answer').map(function (x) {
+    return {code: x.getChildText('Code'), text: x.getChildText('Text'), oth: x.getChildText('OtherSpec')};
+  });
+}
+function stgQcSubject_(s) {
+  var m = {}, a = {}, times = [];
+  s.getChildren().forEach(function (c) {
+    if (c.getName() === 'Chapter') return;
+    var k = stgAttr_(c, 'Field') || c.getName();
+    if (STG_QC_META.indexOf(k) >= 0) m[k] = c.getValue();
+  });
+  stgDescendants_(s, 'Question', []).forEach(function (q) {
+    var v = q.getChildText('Variable'), qt = q.getChildText('QType'), t = q.getChildText('AnsweredTimeStamp');
+    if (t) times.push(new Date(t).getTime());
+    if (qt === 'eqtAmerican') {
+      var an = stgQcAnswers_(q)[0];
+      a[v] = {code: an ? an.code : null, text: q.getChildText('QuestionAnswer'), oth: an ? an.oth : null};
+    } else if (qt === 'eqtMultiSelect') {
+      a[v] = stgQcAnswers_(q);
+    } else {
+      var d = {}, tps = q.getChild('Topics');
+      (tps ? tps.getChildren('Topic') : []).forEach(function (tp) {
+        d[tp.getChildText('Text')] = (qt === 'eqtMultiNumeric' || qt === 'eqtMultiText') ? tp.getChildText('TopicAnswer') : stgQcAnswers_(tp);
+      });
+      a[v] = d;
+    }
+  });
+  times.sort(function (x, y) { return x - y; });
+  return {m: m, a: a, times: times.length > 1 ? [times[0], times[times.length - 1]] : []};
+}
+function stgQcJson_(rec) { return JSON.stringify(rec, function (k, v) { return v === null ? undefined : v; }); }
 /* ==== end shared extractor ==== */
