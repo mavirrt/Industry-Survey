@@ -180,7 +180,7 @@ table.tv td.num,table.tv th.num{text-align:right}
     <article class="card full" id="qE4"></article>
   </section>
 
-  <p class="foot">Base: phỏng vấn hoàn tất, không tính bài test (STGTester) và bài QC đã huỷ (Rejected). B4, C5, D4, E4 tính trên đáp viên trả lời cho từng nhóm vị trí (đã chọn ở B1). Nhóm vị trí có base &lt; 5 hiển thị chữ xám, chỉ dùng tham khảo. Mã "Khác 1–3" (RF95–97) được gộp thành "Khác", base tính theo lượt. Dữ liệu đọc trực tiếp từ Google Sheet (SurveyToGo sync), gồm cả phiếu đang chờ duyệt – chưa qua QC/clean cuối.</p>
+  <p class="foot">Base: phỏng vấn hoàn tất, không tính bài test (người phỏng vấn STGTester hoặc RMIT) và bài QC đã huỷ (Rejected). B4, C5, D4, E4 tính trên đáp viên trả lời cho từng nhóm vị trí (đã chọn ở B1). Nhóm vị trí có base &lt; 5 hiển thị chữ xám, chỉ dùng tham khảo. Mã "Khác 1–3" (RF95–97) được gộp thành "Khác", base tính theo lượt. Dữ liệu đọc trực tiếp từ Google Sheet (SurveyToGo sync), gồm cả phiếu đang chờ duyệt – chưa qua QC/clean cuối.</p>
 </main>
 <div id="tip"></div>
 
@@ -469,8 +469,10 @@ function stgExtractSubject_(s) {
     // interview date in Vietnam time (UTC+7)
     date: isNaN(d) ? '' : new Date(d.getTime() + 7 * 3600e3).toISOString().slice(0, 10),
     done: s.getChildText('Completed') === 'True', st: s.getChildText('Status') || '',
-    // test interviews: interviewer STGTester or Test flag (same rule as the QC dashboard)
-    test: stgField_(s, 'SbjNam') === 'STGTester' || stgField_(s, 'Test') === 'True',
+    // interviewer name (SbjNam): the dashboard treats names like STGTester / RMIT as test interviews
+    nam: String(stgField_(s, 'SbjNam') || '').trim(),
+    // test interviews: interviewer STGTester / RMIT, or Test flag (same rule as the QC dashboard)
+    test: /^(STGTester|RMIT)$/i.test(String(stgField_(s, 'SbjNam') || '').trim()) || stgField_(s, 'Test') === 'True',
     A: {}, B1: [], B4: {}, C5: {}, D4: [], E4: {} };
   stgDescendants_(s, 'Question', []).forEach(function (q) {
     var v = q.getChildText('Variable');
@@ -498,11 +500,13 @@ function stgExtractSubject_(s) {
 }
 /* ==== end shared extractor ==== */
 
+// Tên người phỏng vấn (SbjNam) của bài test – thêm tên vào đây nếu có thêm tài khoản test
+const TEST_NAMES = /^(STGTester|RMIT)$/i;
 // compact records (from Dash_Data or from XML) -> dashboard data
 function ingest(list,extra){
   const out=Object.assign({rf:{},recs:[],ord:{A1:{},A4:{},A7:{},A10:{},A11:{}},full:{A7:{}},bad:[],errCells:[],rejected:0},extra||{});
   for(const r of list){
-    if(!r.done||r.test) continue;
+    if(!r.done||r.test||TEST_NAMES.test(r.nam||'')) continue;   // bài test: STGTester, RMIT hoặc cờ Test
     if(/reject/i.test(r.st||'')){ out.rejected++; continue; }   // bài QC đã huỷ (Rejected) không tính
     const rec={id:r.id,date:r.date,B1:r.B1.map(x=>x[0]),B4:r.B4,C5:r.C5,D4:r.D4,E4:r.E4};
     for(const v of ['A1','A4','A7','A10','A11']){ if(!r.A[v]) continue; const [c,t]=r.A[v]; const l=shortTxt(v,c,t); rec[v]=l; out.ord[v][l]=c; if(v==='A7') out.full.A7[l]=t; }
@@ -531,7 +535,7 @@ async function loadDash(){
   if(!rows.length) return null;            // sheet not created yet -> fall back to Raw_Data
   const list=[],bad=[];
   rows.forEach(r=>{try{list.push(JSON.parse(r[4]));}catch(e){bad.push(r[0]);}});
-  if(list.some(r=>!('test' in r))) return null;  // Dash_Data written by an older script (no test flag) -> use Raw_Data
+  if(list.some(r=>!('nam' in r))) return null;  // Dash_Data written by an older script (no interviewer name) -> use Raw_Data
   return ingest(list,{bad,src:'Dash_Data'});
 }
 async function loadRaw(){

@@ -233,8 +233,10 @@ function stgExtractSubject_(s) {
     // interview date in Vietnam time (UTC+7)
     date: isNaN(d) ? '' : new Date(d.getTime() + 7 * 3600e3).toISOString().slice(0, 10),
     done: s.getChildText('Completed') === 'True', st: s.getChildText('Status') || '',
-    // test interviews: interviewer STGTester or Test flag (same rule as the QC dashboard)
-    test: stgField_(s, 'SbjNam') === 'STGTester' || stgField_(s, 'Test') === 'True',
+    // interviewer name (SbjNam): the dashboard treats names like STGTester / RMIT as test interviews
+    nam: String(stgField_(s, 'SbjNam') || '').trim(),
+    // test interviews: interviewer STGTester / RMIT, or Test flag (same rule as the QC dashboard)
+    test: /^(STGTester|RMIT)$/i.test(String(stgField_(s, 'SbjNam') || '').trim()) || stgField_(s, 'Test') === 'True',
     A: {}, B1: [], B4: {}, C5: {}, D4: [], E4: {} };
   stgDescendants_(s, 'Question', []).forEach(function (q) {
     var v = q.getChildText('Variable');
